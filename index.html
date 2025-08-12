@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Target Practice Arena — First-Person Magical Projectiles</title>
+  <title>Magic Training Arena</title>
   <style>
     html, body {
       margin: 0; padding: 0; overflow: hidden;
-      height: 100%; background: linear-gradient(#87ceeb 0%, #a0d468 90%);
+      height: 100%; background: #87ceeb;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
         Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
       user-select: none;
@@ -94,7 +94,7 @@
 </head>
 <body>
   <div id="instructions">
-    <div><strong>Target Practice Arena</strong></div>
+    <div><strong>Magic Training Arena</strong></div>
     <div style="margin-top:6px;">WASD to move • Mouse to look (click screen to lock pointer) • Left click or Space to shoot magic</div>
   </div>
   <div id="scoreboard">
@@ -115,7 +115,8 @@
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
 
   // Renderer
-  const renderer = new THREE.WebGLRenderer({antialias:true});
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setClearColor(0x000000, 0); // transparent background
   renderer.setSize(window.innerWidth, window.innerHeight);
   document.body.appendChild(renderer.domElement);
   const canvas = renderer.domElement;
@@ -153,9 +154,12 @@
       opacity: 1,
     });
     const target = new THREE.Mesh(geo, mat);
+    const minHeight = 0.5;
+    const maxHeight = 5.0;
+    const height = minHeight + Math.random() * (maxHeight - minHeight);
     target.position.set(
       (Math.random() - 0.5) * 80,
-      0.7,
+      height,
       (Math.random() - 0.5) * 80
     );
     target.userData.respawning = false;
@@ -170,7 +174,7 @@
     yaw: 0,    // left/right rotation
     pitch: 0,  // up/down rotation
     velocity: new THREE.Vector3(0, 0, 0),
-    speed: 7,
+    speed: 14,
   };
 
   // Movement keys
@@ -297,7 +301,7 @@
   // Particle material for trail (sparkly cyan-white)
   const trailMaterial = new THREE.MeshStandardMaterial({
     color: 0x77ccff,
-    emissive: 0x99ddff,
+    emissive: 0xff00ff,
     transparent: true,
     opacity: 1,
     roughness: 0.1,
@@ -307,7 +311,7 @@
   // Particle material for impact burst
   const impactMaterial = new THREE.MeshStandardMaterial({
     color: 0x99eeff,
-    emissive: 0xccffff,
+    emissive: 0xff00ff,
     transparent: true,
     opacity: 1,
     roughness: 0.1,
@@ -318,7 +322,7 @@
   function shootMagic() {
     const orbMat = new THREE.MeshStandardMaterial({
       color: 0x33aaff,
-      emissive: 0x66ccff,
+      emissive: 0xff00ff,
       roughness: 0.3,
       metalness: 0.7,
     });
@@ -332,6 +336,9 @@
     camera.getWorldDirection(forwardDir);
     orb.position.copy(spawnPos).add(forwardDir.clone().multiplyScalar(0.4));
     orb.userData.velocity = forwardDir.clone().multiplyScalar(20);
+
+    orb.userData.startPos = orb.position.clone(); // <-- NEW: store spawn position for range check
+
     orb.userData.life = 4.5;
     orb.userData.trailParticles = [];
     scene.add(orb);
@@ -356,7 +363,6 @@
     }
   }
 
-  // Respawn targets with scale animation
   function respawnTarget(t) {
     t.userData.respawning = true;
     const fromScale = 1;
@@ -372,12 +378,16 @@
       if(progress < 1) {
         requestAnimationFrame(shrinkStep);
       } else {
-        // move to new position
+        // move to new position with floating height
+        const minHeight = 0.5;
+        const maxHeight = 5.0;
+        const height = minHeight + Math.random() * (maxHeight - minHeight);
         t.position.set(
           (Math.random() - 0.5) * 80,
-          0.7,
+          height,
           (Math.random() - 0.5) * 80
         );
+
         // grow back
         const growStart = performance.now();
         function growStep() {
@@ -420,9 +430,22 @@
 
   // Animation & Physics loop
   const clock = new THREE.Clock();
-
+  
   function animate() {
     const dt = Math.min(clock.getDelta(), 0.05);
+
+    // --- Swarm targets toward player ---
+    const swarmSpeed = 3; // units per second
+    targets.forEach(target => {
+      if (target.userData.respawning) return; // skip respawning targets
+      const dir = new THREE.Vector3().subVectors(player.position, target.position);
+      dir.y = 0; // keep movement horizontal
+      const dist = dir.length();
+      if (dist > 0.1) { // avoid jittering if close
+        dir.normalize();
+        target.position.addScaledVector(dir, swarmSpeed * dt);
+      }
+    });
 
     // Movement vector
     const forward = new THREE.Vector3(
@@ -458,16 +481,25 @@
     // Update projectiles
     for(let i = projectiles.length - 1; i >= 0; i--) {
       const proj = projectiles[i];
-      // Apply gravity
-      proj.userData.velocity.y -= 9.8 * dt;
-      // Update position
+
+      // -- CHANGED: Remove gravity, keep velocity constant
       proj.position.addScaledVector(proj.userData.velocity, dt);
+
+      // -- NEW: Check max range (40 units)
+      const distTraveled = proj.position.distanceTo(proj.userData.startPos);
+      const maxRange = 40;
+      if(distTraveled > maxRange) {
+        scene.remove(proj);
+        projectiles.splice(i, 1);
+        continue;
+      }
+
       proj.userData.life -= dt;
 
       // Add trail particles
       addTrailParticle(proj);
 
-      // Remove projectile if dead or below ground
+      // Remove projectile if dead or below ground (life still respected)
       if(proj.userData.life <= 0 || proj.position.y < 0) {
         scene.remove(proj);
         projectiles.splice(i, 1);
@@ -487,9 +519,10 @@
           // Impact burst at target
           impactBurst(t.position.clone().add(new THREE.Vector3(0, 0.3, 0)));
 
-          // Increase score and respawn target
           score++;
           scoreEl.textContent = score;
+
+          // Respawn target
           respawnTarget(t);
 
           break;
@@ -525,7 +558,7 @@
       (Math.random() - 0.5) * 0.1,
       (Math.random() - 0.5) * 0.1
     );
-    p.userData.life = 0.2;
+    p.userData.life = 0.25;
     p.userData.age = 0;
     scene.add(p);
     trailParticles.push(p);
