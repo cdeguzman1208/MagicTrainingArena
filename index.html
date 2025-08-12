@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Target Practice Arena — First-Person Magical Projectiles</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0; overflow: hidden;
+      height: 100%; background: linear-gradient(#87ceeb 0%, #a0d468 90%);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+        Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      user-select: none;
+      cursor: crosshair;
+    }
+    #crosshair {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-size: 28px;
+      line-height: 0.8;
+      pointer-events: none;
+      text-shadow: 0 0 6px #4dd9ff, 0 0 10px #60e0ff;
+      user-select: none;
+      font-weight: 900;
+      z-index: 10;
+      font-family: monospace, monospace;
+    }
+    #instructions {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      background: rgba(0,0,0,0.25);
+      color: white;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      max-width: 320px;
+      z-index: 11;
+      user-select: none;
+    }
+    #scoreboard {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(0,0,0,0.25);
+      color: white;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      z-index: 11;
+      user-select: none;
+      text-align: right;
+      min-width: 130px;
+    }
+    #startBtn {
+      position: absolute;
+      top: 60%; left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 20px;
+      font-size: 18px;
+      font-weight: 700;
+      border-radius: 10px;
+      border: none;
+      background: #3b82f6;
+      color: white;
+      cursor: pointer;
+      user-select: none;
+      box-shadow: 0 0 8px #3b82f6aa;
+      z-index: 20;
+    }
+    #fallbackMessage {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      background: rgba(255,255,255,0.9);
+      padding: 10px 14px;
+      border-radius: 8px;
+      color: #222;
+      font-size: 13px;
+      z-index: 15;
+      user-select: none;
+      display: none;
+      max-width: 280px;
+      box-shadow: 0 0 6px #9999;
+    }
+    canvas {
+      display: block;
+      outline: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="instructions">
+    <div><strong>Target Practice Arena</strong></div>
+    <div style="margin-top:6px;">WASD to move • Mouse to look (click screen to lock pointer) • Left click or Space to shoot magic</div>
+  </div>
+  <div id="scoreboard">
+    Targets hit: <span id="score">0</span><br />
+    Time left: <span id="time">60</span>s
+  </div>
+  <button id="startBtn">Click to Start & Lock Pointer</button>
+  <div id="fallbackMessage">Pointer lock blocked by your environment.<br>Use right-click + drag to look, left click or Space to shoot.</div>
+  <div id="crosshair">+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.min.js"></script>
+<script>
+(() => {
+  // Scene setup
+  const scene = new THREE.Scene();
+
+  // Camera setup - first person
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+
+  // Renderer
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+  const canvas = renderer.domElement;
+
+  // Lighting
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+  hemiLight.position.set(0, 100, 0);
+  scene.add(hemiLight);
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  dirLight.position.set(10, 20, 10);
+  scene.add(dirLight);
+
+  // Ground - large green plane
+  const groundGeo = new THREE.PlaneGeometry(300, 300);
+  const groundMat = new THREE.MeshStandardMaterial({color: 0x2e7d32}); // rich green
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Targets group
+  const targets = [];
+  const targetGroup = new THREE.Group();
+  scene.add(targetGroup);
+
+  function makeTarget() {
+    const geo = new THREE.SphereGeometry(0.7, 16, 12);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xff7043,
+      emissive: 0x330000,
+      metalness: 0.1,
+      roughness: 0.7,
+      transparent: true,
+      opacity: 1,
+    });
+    const target = new THREE.Mesh(geo, mat);
+    target.position.set(
+      (Math.random() - 0.5) * 80,
+      0.7,
+      (Math.random() - 0.5) * 80
+    );
+    target.userData.respawning = false;
+    targetGroup.add(target);
+    targets.push(target);
+  }
+  for(let i=0; i<6; i++) makeTarget();
+
+  // Player position & rotation
+  const player = {
+    position: new THREE.Vector3(0, 1.6, 10), // Eye height ~1.6m
+    yaw: 0,    // left/right rotation
+    pitch: 0,  // up/down rotation
+    velocity: new THREE.Vector3(0, 0, 0),
+    speed: 7,
+  };
+
+  // Movement keys
+  const keys = { w: 0, a: 0, s: 0, d: 0 };
+  window.addEventListener('keydown', (e) => {
+    if(e.repeat) return;
+    switch(e.key.toLowerCase()) {
+      case 'w': keys.w = 1; break;
+      case 'a': keys.a = 1; break;
+      case 's': keys.s = 1; break;
+      case 'd': keys.d = 1; break;
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    switch(e.key.toLowerCase()) {
+      case 'w': keys.w = 0; break;
+      case 'a': keys.a = 0; break;
+      case 's': keys.s = 0; break;
+      case 'd': keys.d = 0; break;
+    }
+  });
+
+  // Pointer lock handling & fallback
+  const startBtn = document.getElementById('startBtn');
+  const fallbackMsg = document.getElementById('fallbackMessage');
+
+  let pointerLocked = false;
+  let fallbackMode = false;
+
+  // Mouse move handler for pointer lock mode
+  function onPointerLockMouseMove(e) {
+    const sensitivity = 0.0025;
+    player.yaw -= e.movementX * sensitivity;
+    player.pitch -= e.movementY * sensitivity;
+    player.pitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, player.pitch));
+  }
+
+  // Fallback mouse look controls (right-click + drag)
+  let fallbackDragging = false;
+  let lastMouseX = 0, lastMouseY = 0;
+
+  function onFallbackMouseDown(e) {
+    if(e.button === 2) { // right click: start dragging
+      fallbackDragging = true;
+      lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
+    } else if(e.button === 0) { // left click: shoot
+      if(!pointerLocked) shootMagic();
+    }
+  }
+  function onFallbackMouseUp(e) {
+    if(e.button === 2) fallbackDragging = false;
+  }
+  function onFallbackMouseMove(e) {
+    if(!fallbackDragging) return;
+    const sensitivity = 0.0025;
+    const dx = e.clientX - lastMouseX;
+    const dy = e.clientY - lastMouseY;
+    player.yaw -= dx * sensitivity;
+    player.pitch -= dy * sensitivity;
+    player.pitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, player.pitch));
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  }
+
+  // Request pointer lock safely
+  function tryPointerLock() {
+    try {
+      canvas.requestPointerLock();
+    } catch (err) {
+      enableFallback();
+    }
+    setTimeout(() => {
+      if(document.pointerLockElement !== canvas) {
+        enableFallback();
+      }
+    }, 600);
+  }
+
+  function enableFallback() {
+    if(fallbackMode) return;
+    fallbackMode = true;
+    fallbackMsg.style.display = 'block';
+    startBtn.style.display = 'none';
+    document.addEventListener('mousedown', onFallbackMouseDown);
+    document.addEventListener('mouseup', onFallbackMouseUp);
+    document.addEventListener('mousemove', onFallbackMouseMove);
+    // Disable context menu on right click to avoid browser menu
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+  function disableFallback() {
+    if(!fallbackMode) return;
+    fallbackMode = false;
+    fallbackMsg.style.display = 'none';
+    document.removeEventListener('mousedown', onFallbackMouseDown);
+    document.removeEventListener('mouseup', onFallbackMouseUp);
+    document.removeEventListener('mousemove', onFallbackMouseMove);
+  }
+
+  document.addEventListener('pointerlockchange', () => {
+    if(document.pointerLockElement === canvas) {
+      pointerLocked = true;
+      disableFallback();
+      document.addEventListener('mousemove', onPointerLockMouseMove);
+      startBtn.style.display = 'none';
+    } else {
+      pointerLocked = false;
+      document.removeEventListener('mousemove', onPointerLockMouseMove);
+      if(!fallbackMode) enableFallback();
+    }
+  });
+
+  startBtn.addEventListener('click', () => {
+    tryPointerLock();
+  });
+
+  // Crosshair - nothing to do, just a div in the center
+
+  // Shooting projectiles
+  const projectiles = [];
+  const trailParticles = [];
+  const particleGeometry = new THREE.SphereGeometry(0.05, 6, 6);
+
+  // Particle material for trail (sparkly cyan-white)
+  const trailMaterial = new THREE.MeshStandardMaterial({
+    color: 0x77ccff,
+    emissive: 0x99ddff,
+    transparent: true,
+    opacity: 1,
+    roughness: 0.1,
+    metalness: 0.5,
+  });
+
+  // Particle material for impact burst
+  const impactMaterial = new THREE.MeshStandardMaterial({
+    color: 0x99eeff,
+    emissive: 0xccffff,
+    transparent: true,
+    opacity: 1,
+    roughness: 0.1,
+    metalness: 0.6,
+  });
+
+  // Shoot magic projectile: glowing orb + trail
+  function shootMagic() {
+    const orbMat = new THREE.MeshStandardMaterial({
+      color: 0x33aaff,
+      emissive: 0x66ccff,
+      roughness: 0.3,
+      metalness: 0.7,
+    });
+    const orbGeo = new THREE.SphereGeometry(0.12, 12, 12);
+    const orb = new THREE.Mesh(orbGeo, orbMat);
+
+    // Spawn slightly in front of camera
+    const spawnPos = new THREE.Vector3();
+    camera.getWorldPosition(spawnPos);
+    const forwardDir = new THREE.Vector3();
+    camera.getWorldDirection(forwardDir);
+    orb.position.copy(spawnPos).add(forwardDir.clone().multiplyScalar(0.4));
+    orb.userData.velocity = forwardDir.clone().multiplyScalar(20);
+    orb.userData.life = 4.5;
+    orb.userData.trailParticles = [];
+    scene.add(orb);
+    projectiles.push(orb);
+  }
+
+  // Impact burst function
+  function impactBurst(pos) {
+    const count = 18;
+    for(let i=0; i<count; i++) {
+      const particle = new THREE.Mesh(particleGeometry, impactMaterial.clone());
+      particle.position.copy(pos);
+      particle.userData.velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 2,
+        Math.random() * 1.5,
+        (Math.random() - 0.5) * 2
+      );
+      particle.userData.life = 0.8 + Math.random() * 0.4;
+      particle.userData.age = 0;
+      scene.add(particle);
+      trailParticles.push(particle);
+    }
+  }
+
+  // Respawn targets with scale animation
+  function respawnTarget(t) {
+    t.userData.respawning = true;
+    const fromScale = 1;
+    const toScale = 0;
+    const duration = 400; // ms
+    const startTime = performance.now();
+
+    function shrinkStep() {
+      const elapsed = performance.now() - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const scaleVal = fromScale * (1 - progress);
+      t.scale.setScalar(scaleVal);
+      if(progress < 1) {
+        requestAnimationFrame(shrinkStep);
+      } else {
+        // move to new position
+        t.position.set(
+          (Math.random() - 0.5) * 80,
+          0.7,
+          (Math.random() - 0.5) * 80
+        );
+        // grow back
+        const growStart = performance.now();
+        function growStep() {
+          const growElapsed = performance.now() - growStart;
+          const growProgress = Math.min(1, growElapsed / duration);
+          t.scale.setScalar(growProgress);
+          if(growProgress < 1) {
+            requestAnimationFrame(growStep);
+          } else {
+            t.userData.respawning = false;
+          }
+        }
+        growStep();
+      }
+    }
+    shrinkStep();
+  }
+
+  // UI Elements
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+
+  let score = 0;
+  let timeLeft = 60;
+  let timerActive = false;
+
+  function startTimer() {
+    if(timerActive) return;
+    timerActive = true;
+    const interval = setInterval(() => {
+      if(timeLeft <= 0) {
+        clearInterval(interval);
+        timerActive = false;
+      } else {
+        timeLeft--;
+        timeEl.textContent = timeLeft;
+      }
+    }, 1000);
+  }
+
+  // Animation & Physics loop
+  const clock = new THREE.Clock();
+
+  function animate() {
+    const dt = Math.min(clock.getDelta(), 0.05);
+
+    // Movement vector
+    const forward = new THREE.Vector3(
+      Math.sin(player.yaw),
+      0,
+      Math.cos(player.yaw)
+    );
+    const right = new THREE.Vector3(
+      Math.sin(player.yaw + Math.PI / 2),
+      0,
+      Math.cos(player.yaw + Math.PI / 2)
+    );
+    const moveDir = new THREE.Vector3();
+    if(keys.w) moveDir.add(forward);
+    if(keys.s) moveDir.add(forward.clone().negate());
+    if(keys.a) moveDir.add(right.clone().negate());
+    if(keys.d) moveDir.add(right);
+    if(moveDir.lengthSq() > 0) {
+      moveDir.normalize().multiplyScalar(player.speed * dt);
+      player.position.add(moveDir);
+      // Clamp player inside ground bounds
+      player.position.x = THREE.MathUtils.clamp(player.position.x, -145, 145);
+      player.position.z = THREE.MathUtils.clamp(player.position.z, -145, 145);
+    }
+
+    // Update camera position & rotation
+    camera.position.copy(player.position);
+    camera.position.y += 0; // eye height already included in player.position.y
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch;
+
+    // Update projectiles
+    for(let i = projectiles.length - 1; i >= 0; i--) {
+      const proj = projectiles[i];
+      // Apply gravity
+      proj.userData.velocity.y -= 9.8 * dt;
+      // Update position
+      proj.position.addScaledVector(proj.userData.velocity, dt);
+      proj.userData.life -= dt;
+
+      // Add trail particles
+      addTrailParticle(proj);
+
+      // Remove projectile if dead or below ground
+      if(proj.userData.life <= 0 || proj.position.y < 0) {
+        scene.remove(proj);
+        projectiles.splice(i, 1);
+        continue;
+      }
+
+      // Check collision with targets
+      for(let j = 0; j < targets.length; j++) {
+        const t = targets[j];
+        if(t.userData.respawning) continue;
+        const dist = proj.position.distanceTo(t.position);
+        if(dist < 0.9) {
+          // Hit target
+          scene.remove(proj);
+          projectiles.splice(i, 1);
+
+          // Impact burst at target
+          impactBurst(t.position.clone().add(new THREE.Vector3(0, 0.3, 0)));
+
+          // Increase score and respawn target
+          score++;
+          scoreEl.textContent = score;
+          respawnTarget(t);
+
+          break;
+        }
+      }
+    }
+
+    // Update trail particles
+    for(let i = trailParticles.length -1; i >= 0; i--) {
+      const p = trailParticles[i];
+      p.userData.age += dt;
+      const lifeRatio = 1 - p.userData.age / p.userData.life;
+      if(lifeRatio <= 0) {
+        scene.remove(p);
+        trailParticles.splice(i,1);
+        continue;
+      }
+      p.position.addScaledVector(p.userData.velocity, dt);
+      p.material.opacity = lifeRatio;
+      p.scale.setScalar(lifeRatio);
+    }
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+
+  // Add a trail particle at projectile's current position
+  function addTrailParticle(proj) {
+    const p = new THREE.Mesh(particleGeometry, trailMaterial.clone());
+    p.position.copy(proj.position);
+    p.userData.velocity = new THREE.Vector3(
+      (Math.random() - 0.5) * 0.1,
+      (Math.random() - 0.5) * 0.1,
+      (Math.random() - 0.5) * 0.1
+    );
+    p.userData.life = 0.2;
+    p.userData.age = 0;
+    scene.add(p);
+    trailParticles.push(p);
+  }
+
+  // Shoot with left click or Spacebar
+  window.addEventListener('mousedown', (e) => {
+    if(e.button === 0) { // left click
+      if(pointerLocked || fallbackMode) {
+        shootMagic();
+        if(!timerActive) startTimer();
+      }
+    }
+  });
+  window.addEventListener('keydown', (e) => {
+    if(e.code === 'Space') {
+      e.preventDefault();
+      if(pointerLocked || fallbackMode) {
+        shootMagic();
+        if(!timerActive) startTimer();
+      }
+    }
+  });
+
+  // Prevent right click context menu to allow fallback right-drag look
+  window.addEventListener('contextmenu', (e) => {
+    if(fallbackMode) e.preventDefault();
+  });
+
+  // Handle window resize
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // Initialize player position & camera
+  camera.position.copy(player.position);
+
+  // Kick off animation
+  animate();
+
+})();
+</script>
+</body>
+</html>
