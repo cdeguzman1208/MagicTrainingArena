@@ -178,17 +178,17 @@
   window.addEventListener('keydown', (e) => {
     if(e.repeat) return;
     switch(e.key.toLowerCase()) {
-      case 'w': keys.w = 1; break;
+      case 'w': keys.s = 1; break;
       case 'a': keys.a = 1; break;
-      case 's': keys.s = 1; break;
+      case 's': keys.w = 1; break;
       case 'd': keys.d = 1; break;
     }
   });
   window.addEventListener('keyup', (e) => {
     switch(e.key.toLowerCase()) {
-      case 'w': keys.w = 0; break;
+      case 'w': keys.s = 0; break;
       case 'a': keys.a = 0; break;
-      case 's': keys.s = 0; break;
+      case 's': keys.w = 0; break;
       case 'd': keys.d = 0; break;
     }
   });
